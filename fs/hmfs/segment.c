@@ -122,25 +122,32 @@ inline void get_child_sit_addr(struct hmfs_sb_info *sbi, void *root_addr,
 			       u64 segno, void **new_root_addr, u64 * new_segno,
 			       u8 height)
 {
+	if(root_addr == NULL){
+		*new_root_addr == NULL;
+		return;
+	}
+	u16 seg_ofs = height * LOG2_ADDRS_PER_BLOCK;
 	block_t *logical_root = (block_t *) root_addr;
 
-	*new_root_addr =
-	    ADDR(sbi, logical_root[segno >> (height * LOG2_ADDRS_PER_BLOCK)]);
-	*new_segno =
-	    segno & ~(ADDRS_PER_BLOCK_MASK << (height * LOG2_ADDRS_PER_BLOCK));
+	*new_root_addr = ADDR(sbi, logical_root[segno >> seg_ofs]);
+	*new_segno = segno & ((1 << seg_ofs) - 1);
 }
 
 /* get a sit/nat page from sit/nat in-NVM tree */
-void *get_sn_page(struct hmfs_sb_info *sbi, void *root, u64 segno, u8 height)
+void *__get_sit_page(struct hmfs_sb_info *sbi, void *root, u64 segno, u8 height)
 {
 	void *new_root;
 	u64 new_segno;
 	block_t *logical_root = (block_t *) root;
 
+	if (root == sbi->virt_addr){
+		//uninitialized
+		return NULL;
+	}
 	if (!height)
 		return (void *)ADDR(sbi, logical_root[segno]);
 	get_child_sit_addr(sbi, root, segno, &new_root, &new_segno, height);
-	return get_sn_page(sbi, new_root, new_segno, height - 1);
+	return __get_sit_page(sbi, new_root, new_segno, height - 1);
 }
 
 block_t recursive_flush_sit_page(struct hmfs_sb_info * sbi, void *old_addr,
@@ -158,7 +165,14 @@ block_t recursive_flush_sit_page(struct hmfs_sb_info * sbi, void *old_addr,
 	if (!height) {
 		cur_stored_addr = cur_addr;
 		cur_stored_root = NULL;
-		if (old_addr == cur_addr) {
+		if (old_addr == NULL){
+			//only allocate new entry_blk
+			cur_stored_root = get_free_node_block(sbi);
+			cur_stored_addr = ADDR(sbi, cur_stored_root);
+			*alloc_cnt++;
+
+		}
+		else if (old_addr == cur_addr) {
 			//COW
 			cur_stored_root = get_free_node_block(sbi);
 			cur_stored_addr = ADDR(sbi, cur_stored_root);
@@ -171,22 +185,27 @@ block_t recursive_flush_sit_page(struct hmfs_sb_info * sbi, void *old_addr,
 		seg_info_to_raw_sit(entry, raw_entry);
 		return cur_stored_root;
 	}
+
 	//2. if this node is not wandered before, COW
 	_offset = (segno >> (height * LOG2_ADDRS_PER_BLOCK)) * sizeof(block_t);
 	cur_stored_addr = cur_addr;
 	cur_stored_root = NULL;
 
-	if (old_addr == cur_addr) {
+	if (old_addr == NULL){
+		//only allocate new node_blk
+		cur_stored_root = get_free_node_block(sbi);
+		cur_stored_addr = ADDR(sbi, cur_stored_root);
+		memset_nt(cur_stored_addr, 0, HMFS_PAGE_SIZE);
+		*alloc_cnt++;
+	}
+	else if (old_addr == cur_addr) {
 		//COW
 		cur_stored_root = get_free_node_block(sbi);
 		cur_stored_addr = ADDR(sbi, cur_stored_root);
 		memcpy(cur_stored_addr, old_addr, HMFS_PAGE_SIZE);
-
-		//change child addr
-		modi_ptr = (block_t *) (cur_stored_addr + _offset);
-		*modi_ptr = cpu_to_le64(cur_stored_root);
 		*alloc_cnt++;
 	}
+
 	//3. go to child
 	get_child_sit_addr(sbi, old_addr, segno, &old_child_addr, &new_segno,
 			   height);
@@ -201,7 +220,8 @@ block_t recursive_flush_sit_page(struct hmfs_sb_info * sbi, void *old_addr,
 	return cur_stored_root;
 }
 
-/* write  inner-NVM tree */
+/* @obsolete
+ * write  inner-NVM tree */
 block_t flush_sit_pages(struct hmfs_sb_info * sbi)	//TODO:@2 should be sit_blk&seg_no
 {
 	struct hmfs_sm_info *sm_info = SM_I(sbi);
@@ -294,7 +314,7 @@ static void *get_sit_page(struct hmfs_sb_info *sbi, u64 segno)
 	struct hmfs_super_block *raw_super = HMFS_RAW_SUPER(sbi);
 	struct checkpoint_info *cp_info = sbi->cp_info;
 
-	return get_sn_page(sbi, ADDR(sbi, cp_info->cur_sit_root), segno,
+	return __get_sit_page(sbi, ADDR(sbi, cp_info->cur_sit_root), segno,
 			   raw_super->sit_height);
 
 }
@@ -647,9 +667,8 @@ found:
 
 //	Lookup sit entry in NVM
 //	TODO: Billy
-struct hmfs_sit_entry *__lookup_sit_entry_btree(__le64 sit_bt_addr, u64 segno)
+struct hmfs_sit_entry *__lookup_sit_entry_btree(struct hmfs_sb_info *sbi, u64 segno)
 {
-
 }
 
 
@@ -684,7 +703,7 @@ static struct seg_entry *lookup_sit_entry(struct hmfs_sb_info *sbi, u64 segno, i
     se = kzalloc(sizeof(struct seg_entry), GFP_KERNEL);
 // Consider out of memory (DRAM)
 //	Dealing with status 3
-    hse = __lookup_sit_entry_btree(sit_bt_addr,segno);
+    hse = __lookup_sit_entry_btree(sbi,segno);
 	if ( hse != NULL )
 	{
 		seg_info_from_raw_sit(se, hse);
