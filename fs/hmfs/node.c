@@ -1207,6 +1207,7 @@ static int __flush_nat_journals(struct hmfs_checkpoint *hmfs_cp,
 
 	nat_journal = &hmfs_cp->nat_journals[*journal_pos];
 
+	*journal_pos = *journal_pos + nr_dirty_nat;
 	while (nr_dirty_nat > 0) {
 		entry = list_entry(entry->list.prev, struct nat_entry, list);
 		nat_journal->nid = cpu_to_le32(entry->ni.nid);
@@ -1216,7 +1217,6 @@ static int __flush_nat_journals(struct hmfs_checkpoint *hmfs_cp,
 		nat_journal++;
 		entry->ni.flag |= NAT_FLAG_JOURNAL;
 	}
-	*journal_pos = *journal_pos + nr_dirty_nat;
 	return 0;
 }
 
@@ -1483,6 +1483,7 @@ static void __mark_block_valid(struct hmfs_sb_info *sbi,
 		return;
 	}
 
+	set_summary_valid_bit(raw_summary);
 	//leaf, alloc & copy nat entry block 
 	if (!height) {
 		hmfs_bug_on(sbi, get_summary_type(raw_summary) != SUM_TYPE_NATD);
